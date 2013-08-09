@@ -1,10 +1,17 @@
 from tulip.http.server import ServerHttpProtocol
-from tulip.http import Response
+from tulip.http import Response, Session, request
 from tulip import get_event_loop
+from tulip import task
+import traceback
 import signal
 
 
 class HttpServer(ServerHttpProtocol):
+    def __init__(self, *args, **kwargs):
+        self.session = Session()
+        super().__init__(*args, **kwargs)
+
+    @task
     def handle_request(self, message, payload):
         """Handle a single http request.
 
@@ -14,20 +21,34 @@ class HttpServer(ServerHttpProtocol):
         info: tulip.http.RequestLine instance
         message: tulip.http.RawHttpMessage instance
         """
-        response = Response(
-            self.transport, 404, http_version=message.version, close=True)
+        url = message.path
+        method = message.method
+        print(url)
+        try:
+            received_response = yield from request(
+                'get', url, session=self.session)
+        except Exception as e:
+            forwarded_response = Response(self.transport,
+                                          500,
+                                          http_version=message.version,
+                                          close=True)
+            body = bytes(repr(e),
+                         encoding='utf-8',
+                         errors='ignore')
+        else:
+            forwarded_response = Response(self.transport,
+                                          received_response.status,
+                                          http_version=message.version,
+                                          close=True)
+            body = yield from received_response.read()
+            body = bytes(body)
 
-        body = b'Page Not Found Hello!'
-
-        response.add_headers(
-            ('Content-Type', 'text/plain'),
-            ('Content-Length', str(len(body))))
-        response.send_headers()
-        response.write(body)
-        response.write_eof()
-
+            for header, value in received_response.items():
+                forwarded_response.add_headers((header, value))
+        forwarded_response.send_headers()
+        forwarded_response.write(body)
+        forwarded_response.write_eof()
         self.keep_alive(False)
-        self.log_access(404, message)
 
 
 def main():
